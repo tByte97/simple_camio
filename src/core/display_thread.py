@@ -158,7 +158,7 @@ class DisplayThread:
                 
             except queue.Empty:
                 # No frame available, just check for keys
-                key = cv.waitKey(1) & 0xFF
+                key = cv.waitKey(10) & 0xFF
                 if key != 255:
                     with self.key_lock:
                         # Always update to capture the latest key press
