@@ -19,8 +19,8 @@ class CameraConfig:
 
     # Default camera resolution (lower = faster)
     # Try 640x480 for best FPS, 1280x720 for balance, 1920x1080 for quality
-    DEFAULT_WIDTH = 1920
-    DEFAULT_HEIGHT = 1080
+    DEFAULT_WIDTH = 1280
+    DEFAULT_HEIGHT = 720
 
     # Camera buffer size (reduce latency)
     BUFFER_SIZE = 1

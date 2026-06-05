@@ -596,7 +596,7 @@ def run_main_loop(cap, components, workers, stop_event, headless=False):
     # Performance profiling variables
     frame_count = 0
     prof_start = time.time()
-    prof_times = {'capture': 0, 'gray': 0, 'feed': 0, 'lock': 0, 'draw': 0, 'ui': 0, 'show': 0, 'key': 0, 'pyglet': 0}
+    prof_times = {'capture': 0, 'gray': 0, 'feed': 0, 'lock': 0, 'draw': 0, 'ui': 0, 'show': 0, 'key': 0, 'pyglet': 0, 'sleep': 0}
     PROF_INTERVAL = 15.0  # Log performance every 15 seconds
     display_frame_counter = 0  # Counter for frame skip
     
@@ -607,8 +607,12 @@ def run_main_loop(cap, components, workers, stop_event, headless=False):
     workers['audio_worker'].enqueue_command(AudioCommand('play_welcome'))
     workers['audio_worker'].enqueue_command(AudioCommand('crickets_play'))
 
+    _target_period = 1.0 / CameraConfig.TARGET_FPS
+
     # Main processing loop
     while cap.isOpened() and not stop_event.is_set():
+        _loop_start = time.time()
+
         # Capture and preprocess frame
         success, frame, gray = capture_and_preprocess(cap, prof_times)
         if not success:
@@ -658,11 +662,18 @@ def run_main_loop(cap, components, workers, stop_event, headless=False):
         pyglet.app.platform_event_loop.dispatch_posted_events()
         prof_times['pyglet'] += time.time() - t
 
+        # Cap main loop to TARGET_FPS to avoid spinning at full CPU speed
+        t = time.time()
+        _remaining = _target_period - (t - _loop_start)
+        if _remaining > 0:
+            time.sleep(_remaining)
+        prof_times['sleep'] += time.time() - t
+
         # Update performance statistics
         frame_count, prof_start, prof_times = update_performance_stats(
             frame_count, prof_start, prof_times, PROF_INTERVAL
         )
-    
+
     # Cleanup display thread
     if display_thread:
         display_thread.stop()
@@ -799,6 +810,9 @@ if __name__ == "__main__":
     if args.headless:
         CameraConfig.HEADLESS = True
         logger.info("Headless mode enabled via command line argument")
+
+    # Limit OpenCV's internal thread pool to reduce contention between workers
+    cv.setNumThreads(2)
 
     # Initialize system
     components = initialize_system(args.input1)

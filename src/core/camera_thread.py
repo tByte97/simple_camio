@@ -58,11 +58,11 @@ class ThreadedCamera:
         import time
         while not self.stopped:
             ret, frame = self.cap.read()
-            
+
             with self.lock:
                 self.ret = ret
                 self.frame = frame
-                
+
                 # Update FPS tracking
                 self.frame_count += 1
                 elapsed = time.time() - self.fps_start_time
@@ -70,6 +70,8 @@ class ThreadedCamera:
                     self.camera_fps = self.frame_count / elapsed
                     self.frame_count = 0
                     self.fps_start_time = time.time()
+
+            time.sleep(0.005)
     
     def read(self):
         """
