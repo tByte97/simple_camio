@@ -2,7 +2,7 @@
     "model":{
       "name":"Rivne City Center",
       "filename":"models/CnapMap/NewCnapColor.png",
-      "template_image":"models/CnapMap/Black_Map.png",
+      "template_image":"models/CnapMap/Black_Map(First).png",
       "blipsound":"MP3/quick_blip.wav",
       "map_description":"models/CnapMap/Audio/Passport Services.mp3",
       "welcome_message":"MP3/welcome.mp3",

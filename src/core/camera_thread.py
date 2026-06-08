@@ -8,7 +8,6 @@ from the camera, eliminating the blocking wait in the main loop.
 import threading
 import cv2 as cv
 import logging
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +31,9 @@ class ThreadedCamera:
         self.frame = None
         self.stopped = False
         self.lock = threading.Lock()
-        self.target_fps = None
         
         # FPS tracking for camera capture rate
+        import time
         self.frame_count = 0
         self.fps_start_time = time.time()
         self.camera_fps = 0.0
@@ -56,8 +55,8 @@ class ThreadedCamera:
     
     def _read_frames(self):
         """Background thread that continuously reads frames."""
+        import time
         while not self.stopped:
-            loop_start = time.time()
             ret, frame = self.cap.read()
 
             with self.lock:
@@ -71,14 +70,8 @@ class ThreadedCamera:
                     self.camera_fps = self.frame_count / elapsed
                     self.frame_count = 0
                     self.fps_start_time = time.time()
-                target_fps = self.target_fps
 
-            if target_fps and target_fps > 0:
-                remaining = (1.0 / target_fps) - (time.time() - loop_start)
-                if remaining > 0:
-                    time.sleep(remaining)
-            else:
-                time.sleep(0.005)
+            time.sleep(0.005)
     
     def read(self):
         """
@@ -117,16 +110,6 @@ class ThreadedCamera:
         """
         with self.lock:
             return self.camera_fps
-
-    def set_target_fps(self, fps):
-        """
-        Throttle the background capture loop to the requested FPS.
-
-        Args:
-            fps (float): Maximum capture FPS. Use None or <=0 for minimal throttling.
-        """
-        with self.lock:
-            self.target_fps = fps if fps and fps > 0 else None
     
     def get(self, prop):
         """
