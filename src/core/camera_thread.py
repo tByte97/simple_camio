@@ -75,8 +75,10 @@ class ThreadedCamera:
 
             if target_fps and target_fps > 0:
                 remaining = (1.0 / target_fps) - (time.time() - loop_start)
-                if remaining > 0:
-                    time.sleep(remaining)
+                while remaining > 0 and not self.stopped:
+                    chunk = min(remaining, 0.05)
+                    time.sleep(chunk)
+                    remaining -= chunk
             else:
                 time.sleep(0.005)
     
