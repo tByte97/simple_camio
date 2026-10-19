@@ -84,6 +84,20 @@ def test_nothing_missing_means_no_engine_call(monkeypatch, tmp_path):
     _player(_model(tmp_path))._synthesize_missing()
 
 
+def test_existing_recording_outside_tts_is_reused(monkeypatch, tmp_path):
+    recording = tmp_path / 'Recordings' / 'zone-1.wav'
+    recording.parent.mkdir()
+    recording.write_bytes(_REAL_ENOUGH_CONTENT)
+
+    def explode(jobs, **kwargs):
+        raise AssertionError('a ready recording must not trigger TTS')
+
+    monkeypatch.setattr(engine, 'synthesize', explode)
+    model = {'hotspots': [{'textDescription': 'Зона', 'audioDescription': str(recording)}]}
+    _player(model)._synthesize_missing()
+    assert not (recording.parent / 'tts').exists()
+
+
 def test_tts_unavailable_is_survivable(monkeypatch, tmp_path):
     def unavailable(jobs, **kwargs):
         raise engine.TTSUnavailable('no piper here')

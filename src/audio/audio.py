@@ -18,6 +18,7 @@ hook that raises the same error again during interpreter shutdown.
 import os
 import sys
 import logging
+from pathlib import Path
 
 from src.config import TTSConfig
 
@@ -242,7 +243,9 @@ class ZoneAudioPlayer:
         # Lazy: Piper may not be installed, and that must not stop the app starting.
         from src.tts import engine, model_audio
 
-        todo = model_audio.pending(model_audio.narration_entries(self.model))
+        entries = [entry for entry in model_audio.narration_entries(self.model)
+                   if not model_audio._is_usable(Path(entry.audio_path))]
+        todo = model_audio.pending(entries)
         if not todo:
             return
 
