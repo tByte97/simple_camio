@@ -18,7 +18,6 @@ hook that raises the same error again during interpreter shutdown.
 import os
 import sys
 import logging
-from pathlib import Path
 
 from src.config import TTSConfig
 
@@ -223,13 +222,9 @@ class ZoneAudioPlayer:
         synthesis while a finger is resting on it. Writes only audio files - a
         device in the field does not rewrite its own configuration - at whatever
         destination model_audio.output_path() names, the same module the offline
-        generator CLI uses. For a model whose audioDescription/map_description
-        already point inside model_audio's generated subdirectory (as every model
-        that has already been through the CLI does), that destination is the
-        literal path the JSON names, so nothing changes for them; a model that
-        still names an un-generated path elsewhere (e.g. Audio/X.mp3) gets its
-        clip written under Audio/tts/X.wav instead of as WAV bytes under the
-        literal .mp3 name.
+        generator CLI uses. A missing Audio/X.mp3 is generated as Audio/tts/X.wav;
+        playback paths are updated in memory, never in the model JSON. Existing
+        generated clips are also reused when runtime synthesis is disabled.
 
         model_audio.pending() also owns the missing-file test, so this and the
         CLI cannot drift on what counts as "already generated".
@@ -237,15 +232,19 @@ class ZoneAudioPlayer:
         Every failure here is logged and tolerated. The player continues with
         whatever files do exist.
         """
-        if not TTSConfig.RUNTIME_FALLBACK:
-            return
-
         # Lazy: Piper may not be installed, and that must not stop the app starting.
         from src.tts import engine, model_audio
 
-        entries = [entry for entry in model_audio.narration_entries(self.model)
-                   if not model_audio._is_usable(Path(entry.audio_path))]
-        todo = model_audio.pending(entries)
+        entries = model_audio.narration_entries(self.model)
+        conflicts = model_audio.conflicting_outputs(entries)
+        for path in sorted(conflicts):
+            logger.warning(f'Ambiguous narration output {path}; skipping synthesis and reuse')
+        model_audio.use_generated_audio(self.model)
+        if not TTSConfig.RUNTIME_FALLBACK:
+            return
+
+        todo = [entry for entry in model_audio.pending(entries)
+                if model_audio.output_path(entry) not in conflicts]
         if not todo:
             return
 
@@ -267,6 +266,7 @@ class ZoneAudioPlayer:
             logger.error(f"Synthesis failed unexpectedly: {e}", exc_info=True)
             return
 
+        model_audio.use_generated_audio(self.model)
         for job in failed:
             logger.warning(
                 f"No audio for {job.output_path.name}; that zone will stay silent")

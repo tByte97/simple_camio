@@ -1,62 +1,57 @@
-# Map reader integration: preparation status
+# Maker map reader and TTS integration
 
-The reader resolves the existing maker's loose-file export relative to its model
-JSON, passes resolved paths to CamIO in memory, and integrates those paths with
-the existing Piper narration generator. The maker is unchanged.
+The reader accepts the existing maker's loose-file exports. It resolves
+`models/<name>/...` paths relative to the exported JSON, identifies zones from
+existing filenames/navigation, and passes absolute paths to CamIO in memory.
+The maker and map JSON schema are unchanged.
 
-This branch starts at upstream `auto-narration` commit
-`d69e05e89bb0802dfbf82771614d7be1107acc4e`. On 2026-10-19, GitHub's branches API
-confirmed that this was still the latest TTS branch and that upstream `master`
-was `d5abc575af608ae3f66cafe95c5b06b8919dd152`. There were no newer upstream
-commits to download. The local Git fetch itself was unavailable in the sandbox.
+## Compatibility
 
-## Suggested PR
+- Standard maker exports retain byte-identical JSON during narration generation
+  and folder relocation. Empty maker descriptions disable their placeholder.
+- Legacy models retain their loading behavior, including different template and
+  mask dimensions; an explicit reader preflight still validates images strictly.
+- Existing legacy description recordings remain available without description text.
+- Both runtime and offline TTS reuse usable recordings. `--force` explicitly
+  regenerates narration through the offline CLI.
+- Runtime updates playback paths in memory after successful synthesis and reuses
+  generated clips on later launches, including when runtime synthesis is disabled.
+- Legacy overviews use their distinct generated `map_description.wav`, rather than
+  accidentally adopting a hotspot recording with a shared original filename.
+- Ambiguous generated destinations are rejected by the reader. Runtime skips
+  colliding replacements without overwriting or reusing another zone's recording;
+  independent clips can still be generated.
 
-Title: Resolve existing maker exports in the reader and TTS generator
-
-Base: `samaranin/simple_camio:auto-narration`. Target `master` after the TTS
-branch is merged there; otherwise the PR also includes the upstream TTS work.
-
-Description:
-
-> Maker exports contain `models/<name>/...` paths that stop working when users
-> move the map directory. Resolve those paths against the exported JSON without
-> changing its bytes, infer zone identity from existing filenames/navigation,
-> and share resolution with offline narration generation and runtime loading.
-> Add reader preflight checks and integration tests against the unchanged maker.
+No map migration is required. Existing model files, images and recordings were
+not changed. New local maps, generated audio, voice models, test-copy folders,
+Python environments and unrelated macOS configuration changes are excluded.
 
 ## Validation
 
-The current local working tree passed 178 tests with one skipped test using
-`venv-tts/bin/python -m pytest -q`. This run includes pre-existing local macOS
-camera changes and a local BlackMap, which are outside the reader commit.
-Pyglet printed an interpreter-exit traceback because the sandbox has no display;
-pytest returned exit code 0. Hardware playback was not tested.
+A clean source snapshot without local macOS changes, new maps, or a sibling maker
+checkout passed **203 tests, with one optional test skipped**, on 2026-10-20.
+Core reader tests create temporary input files and require neither Node.js nor
+the maker. Only the optional comparison with the actual maker exporter skips
+when that checkout or Node.js is unavailable; that comparison also passed in
+this workspace.
 
-A clean archive of the reader commit, without local camera changes, maps or a
-sibling maker checkout, passed 165 tests with nine maker integration tests
-skipped. Exit code was 0, with the same Pyglet display-related exit traceback.
+Regression coverage includes legacy CnapMap loading, strict maker validation,
+unchanged JSON after relocation and synthesis, original recording reuse,
+forced generation, partial synthesis failures, repeated runtime loading,
+legacy descriptions, and colliding/explicitly owned narration destinations.
+Synthesis tests use temporary files; the existing maps were only read. SHA-256
+checks confirmed that all 173 existing files under models/ remained unchanged.
 
-A local 42-zone BlackMap export passed strict preflight, and repeating offline
-generation reported `nothing to generate`. Local examples, generated narration,
-voice models, and test-copy folders are not part of this source change.
+Pytest returned exit code 0. Pyglet still prints a display-related interpreter
+shutdown traceback in the sandbox without a Cocoa display; physical camera
+tracking, audible playback and Raspberry Pi operation require device testing.
 
-## Review findings deferred by the user
+## Branch and future PR
 
-This is a prepared implementation, with compatibility work remaining before it
-should be called ready to merge:
+The reader branch is based on upstream `auto-narration` commit
+`d69e05e89bb0802dfbf82771614d7be1107acc4e`. Publish it to
+`tByte97/simple_camio:reader-tts-integration`; do not create a PR yet.
 
-- **High:** Runtime image-size validation rejects the bundled legacy CnapMap
-  (720x960 mask, 720x1280 template), although the old loader accepted it.
-- **High:** For missing narration outside `tts/`, runtime synthesis writes a
-  generated path but playback still references the original missing path.
-- **Medium:** Offline generation can synthesize a new `tts/` recording and
-  rewrite paths even when a usable recording already exists outside `tts/`.
-- **Medium:** New maker integration tests require a sibling checkout named
-  `simple-camio-map-editor` and Node.js; they skip in a standalone checkout.
-- **Compatibility:** An explicitly blank `mapDescriptionText` disables an
-  existing legacy description recording as well as a maker placeholder.
-
-These findings came from an independent read-only review and local checks.
-The user requested preparing existing changes only, so no fixes were applied.
-Physical camera tracking and Raspberry Pi playback still require device tests.
+A later reader-only PR can target `samaranin/simple_camio:auto-narration`, or
+`master` after upstream TTS PR #8 is merged. A PR to today's master would also
+include the upstream TTS commits.

@@ -78,6 +78,12 @@ def _zone_id(hotspot, graph):
     return next(iter(identities), None)
 
 
+def _has_zone_ids(model):
+    """Recognize ID-bearing exports without imposing a new JSON schema."""
+    hotspots = model.get('hotspots', [])
+    return bool(hotspots) and all('id' in hotspot for hotspot in hotspots)
+
+
 def resolve_model(document, model_file, app_root=APP_ROOT):
     """Resolve existing maker/legacy paths, preserving future TTS destinations.
 
@@ -104,16 +110,19 @@ def resolve_model(document, model_file, app_root=APP_ROOT):
     labels = Counter(_label(h.get('textDescription')) for h in hotspots)
     audio_files = None
 
-    def audio(value, label=None):
+    def audio(value, label=None, *, generated=None, exclude=()):
         nonlocal audio_files
         if value:
             for path in local_paths(value, source):
                 if path.is_file():
                     return path
+        if generated is not None and generated.is_file():
+            return _inside(base, generated)
         if audio_files is None:
             audio_files = [p for p in base.rglob('*') if p.is_file() and p.suffix.lower() in AUDIO_SUFFIXES]
         stem = PurePosixPath(value.replace('\\', '/')).stem.casefold() if value else ''
-        matches = [p for p in audio_files if stem and p.stem.casefold() == stem]
+        matches = [p for p in audio_files if stem and p.stem.casefold() == stem
+                   and p.resolve() not in exclude]
         if not matches and label:
             matches = [p for p in audio_files if _label(p.stem) == _label(label)]
             if matches and labels[_label(label)] > 1:
@@ -146,19 +155,36 @@ def resolve_model(document, model_file, app_root=APP_ROOT):
             hotspot['id'] = zone_id
         value = hotspot.get('audioDescription') or ''
         effective = value or (f'Audio/tts/{zone_id}.wav' if zone_id else '')
-        found = audio(effective, hotspot.get('textDescription'))
-        if found is not None:
-            hotspot['audioDescription'] = str(found)
-        elif effective:
+        if effective:
             hotspot['audioDescription'] = str(planned_path(effective, source))
         else:
             raise ValueError('Cannot determine zone audio: supply its filename or a zone ID')
 
-    if 'mapDescriptionText' in model and not (model.get('mapDescriptionText') or '').strip():
+    if (_has_zone_ids(model) and 'mapDescriptionText' in model
+            and not (model.get('mapDescriptionText') or '').strip()):
         model.pop('map_description', None)
-    elif model.get('map_description'):
+
+    # Check original destinations before filename fallback can merge two missing
+    # sources into one existing generated clip. Explicit shared recordings stay valid.
+    from src.tts import model_audio
+
+    if model.get('map_description'):
+        model['map_description'] = str(planned_path(model['map_description'], source))
+    entries = model_audio.narration_entries(model)
+    conflicts = model_audio.conflicting_outputs(entries)
+    if conflicts:
+        raise ValueError('Conflicting narration outputs: ' + ', '.join(str(p) for p in sorted(conflicts)))
+
+    for hotspot in hotspots:
+        found = audio(hotspot['audioDescription'], hotspot.get('textDescription'))
+        if found is not None:
+            hotspot['audioDescription'] = str(found)
+
+    if model.get('map_description'):
         value = model['map_description']
-        found = audio(value)
+        description = next(entry for entry in entries if entry.kind == 'map_description')
+        zone_outputs = {model_audio.output_path(entry) for entry in entries if entry.kind == 'hotspot'}
+        found = audio(value, generated=model_audio.output_path(description), exclude=zone_outputs)
         if found is not None:
             model['map_description'] = str(found)
         elif (model.get('mapDescriptionText') or '').strip():
@@ -215,8 +241,8 @@ def read_map(filename, app_root=APP_ROOT):
             raise ValueError(f"Unsupported modelType: {model['modelType']}")
         # ID-bearing maker maps have exact masks; older hand-painted maps can
         # have anti-aliased fringes and retain their previous behavior.
-        if 'filename' in model or 'template_image' in model:
-            validate_images(model, strict=bool(model.get('hotspots')) and all('id' in h for h in model['hotspots']))
+        if _has_zone_ids(model) and ('filename' in model or 'template_image' in model):
+            validate_images(model, strict=True)
     return model
 
 

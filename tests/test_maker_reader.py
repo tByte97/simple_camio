@@ -1,4 +1,4 @@
-"""Compatibility with the unchanged maker's exporter and exact RGB rasterizer."""
+"""Portable maker fixtures, legacy compatibility and optional exporter agreement."""
 import base64
 import hashlib
 import json
@@ -17,10 +17,61 @@ from src.tts import generate_audio
 MAKER = Path(__file__).resolve().parents[2] / 'simple-camio-map-editor'
 
 
+def maker_document():
+    """The unchanged maker's two-zone export, without a Node.js dependency."""
+    return {'model': {
+        'name': 'OriginalName',
+        'modelType': 'sift_2d_mediapipe',
+        'filename': 'models/OriginalName/OriginalName.png',
+        'template_image': 'models/OriginalName/template.jpg',
+        'pixels_per_cm': 2,
+        'map_description': 'models/OriginalName/Audio/tts/map_description.wav',
+        'mapDescriptionText': '',
+        'blipsound': 'MP3/quick_blip.wav',
+        'welcome_message': 'MP3/welcome.mp3',
+        'goodbye_message': 'MP3/goodbye.mp3',
+        'heartbeat': 'MP3/white_noise.mp3',
+        'crickets': 'MP3/crickets.mp3',
+        'hotspots': [
+            {'color': [217, 76, 76], 'textDescription': 'Сходи',
+             'audioDescription': 'models/OriginalName/Audio/tts/zone-1.wav'},
+            {'color': [76, 217, 76], 'textDescription': 'Сходи',
+             'audioDescription': 'models/OriginalName/Audio/tts/zone-2.wav'},
+        ],
+        'navigation': {
+            'origin': 'entrance',
+            'nodes': [
+                {'id': 'entrance', 'xy': [50, 70], 'label': 'вхід'},
+                {'id': 'zone-1-node', 'xy': [20, 15], 'zone': [217, 76, 76]},
+            ],
+            'edges': [['entrance', 'zone-1-node']],
+        },
+    }}
+
+
+def maker_rgba():
+    # Maker tests polygon pixel centres, so the far edges are exclusive.
+    rgba = np.full((80, 100, 4), 255, dtype=np.uint8)
+    rgba[:30, :40, :3] = (217, 76, 76)
+    rgba[:30, 45:75, :3] = (76, 217, 76)
+    return rgba
+
+
 @pytest.fixture
 def maker_export(tmp_path):
+    document = maker_document()
+    folder = tmp_path / 'DifferentFolderName'
+    folder.mkdir()
+    path = folder / 'OriginalName.json'
+    path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding='utf-8')
+    cv.imwrite(str(folder / 'OriginalName.png'), maker_rgba()[:, :, :3][:, :, ::-1])
+    cv.imwrite(str(folder / 'template.jpg'), np.full((80, 100), 128, np.uint8))
+    return path, document
+
+
+def test_optional_fixture_matches_unchanged_maker():
     if not (MAKER / 'src/export-model.js').is_file() or shutil.which('node') is None:
-        pytest.skip('Maker compatibility tests require the sibling maker checkout and Node.js')
+        pytest.skip('Optional exporter comparison requires the sibling maker and Node.js')
     script = '''
       const p = require('./test/fixtures/project-v1.json');
       p.name = 'OriginalName';
@@ -37,14 +88,9 @@ def maker_export(tmp_path):
                                  rgba:Buffer.from(r.data).toString('base64')}));
     '''
     data = json.loads(subprocess.check_output(['node', '-e', script], cwd=MAKER))
-    folder = tmp_path / 'DifferentFolderName'
-    folder.mkdir()
-    path = folder / 'OriginalName.json'
-    path.write_text(json.dumps(data['document'], ensure_ascii=False, indent=2), encoding='utf-8')
+    assert data['document'] == maker_document()
     rgba = np.frombuffer(base64.b64decode(data['rgba']), np.uint8).reshape(data['height'], data['width'], 4)
-    cv.imwrite(str(folder / 'OriginalName.png'), rgba[:, :, :3][:, :, ::-1])
-    cv.imwrite(str(folder / 'template.jpg'), np.full(rgba.shape[:2], 128, np.uint8))
-    return path, data['document']
+    np.testing.assert_array_equal(rgba, maker_rgba())
 
 
 def wav(path):
@@ -167,3 +213,106 @@ def test_identity_conflicts_and_escaping_symlinks_are_rejected(maker_export, tmp
     (path.parent / 'Audio').symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match='escapes the map directory'):
         resolve_model(document, path)
+
+
+def legacy_document(document):
+    model = document['model']
+    model.pop('navigation', None)
+    for index, hotspot in enumerate(model['hotspots']):
+        hotspot.pop('id', None)
+        hotspot['audioDescription'] = f'Audio/recording-{index}.wav'
+    return document
+
+
+def test_legacy_size_mismatch_loads_but_explicit_validation_rejects(maker_export):
+    path, document = maker_export
+    legacy_document(document)
+    path.write_text(json.dumps(document), encoding='utf-8')
+    cv.imwrite(str(path.parent / 'template.jpg'), np.zeros((4, 4), np.uint8))
+    before = path.read_bytes()
+    model = read_map(path)
+    assert all('id' not in hotspot for hotspot in model['hotspots'])
+    with pytest.raises(ValueError, match='differs from template'):
+        validate_images(model, strict=True)
+    assert path.read_bytes() == before
+
+
+def test_maker_size_mismatch_is_rejected_on_load(maker_export):
+    path, _ = maker_export
+    cv.imwrite(str(path.parent / 'template.jpg'), np.zeros((4, 4), np.uint8))
+    with pytest.raises(ValueError, match='differs from template'):
+        read_map(path)
+
+
+def test_blank_legacy_description_keeps_existing_recording(maker_export):
+    path, document = maker_export
+    legacy_document(document)
+    recording = path.parent / 'Audio/tts/map_description.wav'
+    wav(recording)
+    path.write_text(json.dumps(document), encoding='utf-8')
+    before = path.read_bytes()
+    assert read_map(path)['map_description'] == str(recording)
+    assert path.read_bytes() == before
+
+
+def test_bundled_cnap_map_loads_without_modification():
+    path = Path(__file__).resolve().parents[1] / 'models/CnapMap/CnapFirstFloor.json'
+    before = path.read_bytes()
+    model = read_map(path)
+    assert model['hotspots']
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('overview_exists', [False, True])
+def test_legacy_shared_source_uses_distinct_generated_overview(tmp_path, overview_exists):
+    from src.tts import model_audio
+
+    source = tmp_path / 'Audio/shared.mp3'
+    zone = tmp_path / 'Audio/tts/shared.wav'
+    overview = tmp_path / 'Audio/tts/map_description.wav'
+    wav(zone)
+    if overview_exists:
+        wav(overview)
+    document = {'model': {'map_description': 'Audio/shared.mp3',
+                         'mapDescriptionText': 'Опис карти',
+                         'hotspots': [{'textDescription': 'Зона',
+                                       'audioDescription': 'Audio/shared.mp3'}]}}
+    model = resolve_model(document, tmp_path / 'model.json')
+    assert model['hotspots'][0]['audioDescription'] == str(zone)
+    assert model['map_description'] == str(overview if overview_exists else source)
+    todo = model_audio.pending(model_audio.narration_entries(model))
+    assert [entry.kind for entry in todo] == ([] if overview_exists else ['map_description'])
+
+
+@pytest.mark.parametrize('generated_exists', [False, True])
+def test_conflicting_missing_sources_are_rejected_before_stem_fallback(tmp_path, generated_exists):
+    if generated_exists:
+        wav(tmp_path / 'Audio/tts/shared.wav')
+    document = {'model': {'hotspots': [
+        {'textDescription': 'Перша', 'audioDescription': 'Audio/shared.mp3'},
+        {'textDescription': 'Друга', 'audioDescription': 'Audio/shared.ogg'},
+    ]}}
+    with pytest.raises(ValueError, match='Conflicting narration outputs'):
+        resolve_model(document, tmp_path / 'model.json')
+
+
+def test_explicit_shared_legacy_recording_is_preserved(tmp_path):
+    source = tmp_path / 'Audio/shared.mp3'
+    source.parent.mkdir()
+    source.write_bytes(b'explicit shared recording' * 10)
+    document = {'model': {'map_description': 'Audio/shared.mp3',
+                         'mapDescriptionText': '',
+                         'hotspots': [{'textDescription': 'Зона',
+                                       'audioDescription': 'Audio/shared.mp3'}]}}
+    model = resolve_model(document, tmp_path / 'model.json')
+    assert model['hotspots'][0]['audioDescription'] == model['map_description'] == str(source)
+
+
+def test_missing_source_cannot_adopt_another_zones_explicit_recording(tmp_path):
+    wav(tmp_path / 'Audio/tts/shared.wav')
+    document = {'model': {'hotspots': [
+        {'textDescription': 'Перша', 'audioDescription': 'Audio/shared.mp3'},
+        {'textDescription': 'Друга', 'audioDescription': 'Audio/tts/shared.wav'},
+    ]}}
+    with pytest.raises(ValueError, match='Conflicting narration outputs'):
+        resolve_model(document, tmp_path / 'model.json')
