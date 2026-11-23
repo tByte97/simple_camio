@@ -1,0 +1,166 @@
+{
+  "model": {
+    "name": "SolarSystem",
+    "modelType": "sift_2d_mediapipe",
+    "filename": "models/SolarSystem/SolarSystem.png",
+    "template_image": "models/SolarSystem/template.png",
+    "pixels_per_cm": 76.06276933161722,
+    "map_description": "models/SolarSystem/Audio/tts/map_description.wav",
+    "mapDescriptionText": "",
+    "blipsound": "MP3/quick_blip.wav",
+    "welcome_message": "MP3/welcome.mp3",
+    "goodbye_message": "MP3/goodbye.mp3",
+    "heartbeat": "MP3/white_noise.mp3",
+    "crickets": "MP3/crickets.mp3",
+    "hotspots": [
+      {
+        "color": [
+          217,
+          76,
+          76
+        ],
+        "textDescription": "Сонце",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-1.wav"
+      },
+      {
+        "color": [
+          76,
+          217,
+          117
+        ],
+        "textDescription": "Меркурій",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-2.wav"
+      },
+      {
+        "color": [
+          158,
+          76,
+          217
+        ],
+        "textDescription": "Венера",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-3.wav"
+      },
+      {
+        "color": [
+          217,
+          199,
+          76
+        ],
+        "textDescription": "Земля",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-4.wav"
+      },
+      {
+        "color": [
+          76,
+          193,
+          217
+        ],
+        "textDescription": "Місяць",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-5.wav"
+      },
+      {
+        "color": [
+          217,
+          76,
+          152
+        ],
+        "textDescription": "Марс",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-6.wav"
+      },
+      {
+        "color": [
+          82,
+          76,
+          217
+        ],
+        "textDescription": "Юпітер",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-8.wav"
+      },
+      {
+        "color": [
+          217,
+          123,
+          76
+        ],
+        "textDescription": "Сатурн",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-9.wav"
+      },
+      {
+        "color": [
+          76,
+          217,
+          164
+        ],
+        "textDescription": "Уран",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-10.wav"
+      },
+      {
+        "color": [
+          205,
+          76,
+          217
+        ],
+        "textDescription": "Нептун",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-11.wav"
+      },
+      {
+        "color": [
+          217,
+          76,
+          105
+        ],
+        "textDescription": "Карликова планета",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-14.wav"
+      },
+      {
+        "color": [
+          111,
+          217,
+          76
+        ],
+        "textDescription": "Пояс Астероїдів",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-15.wav"
+      },
+      {
+        "color": [
+          187,
+          217,
+          76
+        ],
+        "textDescription": "Пояс Койпера",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-16.wav"
+      },
+      {
+        "color": [
+          76,
+          146,
+          217
+        ],
+        "textDescription": "Плутон",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-17.wav"
+      },
+      {
+        "color": [
+          76,
+          217,
+          88
+        ],
+        "textDescription": "Супутник тітан",
+        "audioDescription": "models/SolarSystem/Audio/tts/zone-18.wav"
+      }
+    ],
+    "navigation": {
+      "origin": "waypoint-1",
+      "nodes": [
+        {
+          "id": "waypoint-1",
+          "xy": [
+            1527,
+            1007
+          ]
+        }
+      ],
+      "edges": []
+    }
+  }
+}
