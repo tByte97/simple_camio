@@ -24,7 +24,7 @@ logging.basicConfig(
 
 # Import from new modular structure
 from src.config import (CameraConfig, AudioConfig, WorkerConfig, UIConfig,
-                        TapDetectionConfig, InteractionConfig)
+                        TapDetectionConfig, InteractionConfig, GestureDetectorConfig)
 from src.core.utils import select_camera_port, load_map_parameters, is_gesture_valid
 from src.audio.audio import AmbientSoundPlayer, ZoneAudioPlayer
 from src.detection.gesture_detection import GestureDetector, MovementMedianFilter
@@ -245,6 +245,42 @@ def mark_hand_missing(hand_state, audio_worker):
     hand_state['was_detected'] = False
     hand_state['first_detected_ts'] = 0.0
     hand_state['missing_since'] = 0.0
+    hand_state.pop('last_zone', None)
+    hand_state.pop('two_finger', None)
+
+
+def two_finger_details_due(hand_state, zone_id, hotspots, now):
+    """
+    True once, when the two-finger pose has rested on one zone for
+    TWO_FINGER_HOLD_SECONDS. Moving to another zone, or leaving the pose for
+    longer than TWO_FINGER_GRACE_SECONDS, starts a new hold.
+    """
+    cfg = GestureDetectorConfig
+    hold = hand_state.get('two_finger')
+    if hold is None or hold['zone'] != zone_id or now - hold['seen'] > cfg.TWO_FINGER_GRACE_SECONDS:
+        hold = {'zone': zone_id, 'since': now, 'seen': now, 'played': False}
+        hand_state['two_finger'] = hold
+    hold['seen'] = now
+    if hold['played'] or zone_id not in hotspots:
+        return False
+    if now - hold['since'] >= cfg.TWO_FINGER_HOLD_SECONDS:
+        hold['played'] = True
+        return True
+    return False
+
+
+def remember_zone(hand_state, zone_id, hotspots):
+    """Note the last real zone under the finger, for an off-target double-tap."""
+    if zone_id in hotspots:
+        hand_state['last_zone'] = (zone_id, time.time())
+
+
+def recent_zone(hand_state, now):
+    """The zone the finger was on within DOUBLE_TAP_ZONE_MEMORY_SECONDS, or None."""
+    zone_id, seen = hand_state.get('last_zone') or (None, 0.0)
+    if zone_id is not None and now - seen <= InteractionConfig.DOUBLE_TAP_ZONE_MEMORY_SECONDS:
+        return zone_id
+    return None
 
 
 def process_gestures_and_audio(gesture_loc, gesture_status, components,
@@ -294,6 +330,7 @@ def process_gestures_and_audio(gesture_loc, gesture_status, components,
 
         # Update zone tracking and set prev_zone_name to prevent zone audio on first appearance
         zone_id = components.interact.push_gesture(gesture_loc)
+        remember_zone(hand_state, zone_id, components.camio_player.hotspots)
         if zone_id in components.camio_player.hotspots:
             components.camio_player.prev_zone_name = components.camio_player.hotspots[zone_id]['textDescription']
         else:
@@ -309,12 +346,28 @@ def process_gestures_and_audio(gesture_loc, gesture_status, components,
     time_since_first_detection = time.time() - hand_state['first_detected_ts'] if hand_state['first_detected_ts'] > 0 else 999
     in_cooldown = time_since_first_detection < ZONE_AUDIO_COOLDOWN
 
+    # Two fingers held on a zone: speak its details once (same as a double-tap)
+    if gesture_status == 'two_finger':
+        zone_id = components.interact.push_gesture(gesture_loc)
+        remember_zone(hand_state, zone_id, components.camio_player.hotspots)
+        if two_finger_details_due(hand_state, zone_id, components.camio_player.hotspots, time.time()):
+            audio_worker.enqueue_command(
+                AudioCommand('play_zone', zone_id=zone_id, gesture_status='double_tap')
+            )
+            logger.info(f"Two-finger details for zone {zone_id}")
+        return last_double_tap_ts, hand_state
+
     # Handle double-tap
     if gesture_status == 'double_tap':
         now = time.time()
         if now - last_double_tap_ts > TapDetectionConfig.DOUBLE_TAP_COOLDOWN_MAIN:
             try:
                 zone_id = components.interact.push_gesture(gesture_loc)
+                if zone_id not in components.camio_player.hotspots:
+                    recent = recent_zone(hand_state, now)
+                    if recent is not None:
+                        logger.info(f"Double-tap off zone; using zone {recent} the finger just left")
+                        zone_id = recent
                 audio_worker.enqueue_command(
                     AudioCommand('play_zone', zone_id=zone_id, gesture_status='double_tap')
                 )
@@ -325,12 +378,14 @@ def process_gestures_and_audio(gesture_loc, gesture_status, components,
     elif not in_cooldown:
         # Normal gesture processing (only if not in cooldown)
         zone_id = components.interact.push_gesture(gesture_loc)
+        remember_zone(hand_state, zone_id, components.camio_player.hotspots)
         audio_worker.enqueue_command(
             AudioCommand('play_zone', zone_id=zone_id, gesture_status=gesture_status)
         )
     else:
         # In cooldown - update zone tracking but don't play audio
         zone_id = components.interact.push_gesture(gesture_loc)
+        remember_zone(hand_state, zone_id, components.camio_player.hotspots)
         # Also update prev_zone_name to track current zone during cooldown
         # This prevents audio from playing when cooldown expires
         if zone_id in components.camio_player.hotspots:
@@ -411,7 +466,7 @@ def initialize_display(use_threaded, headless=False):
         return None
 
 
-def capture_and_preprocess(cap, prof_times):
+def capture_and_preprocess(cap, prof_times, mirror=None):
     """
     Capture frame from camera and convert to grayscale.
     
@@ -429,7 +484,11 @@ def capture_and_preprocess(cap, prof_times):
     if not ret:
         logger.error("No camera image returned")
         return False, None, None
-    
+
+    # Flip mirrored cameras here, so SIFT, MediaPipe and the display all agree
+    if mirror is not None:
+        frame = mirror.apply(frame)
+
     # Convert to grayscale for SIFT
     t = time.time()
     gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
@@ -731,7 +790,7 @@ def run_main_loop(cap, components, workers, stop_event, headless=False):
         _loop_start = time.time()
 
         # Capture and preprocess frame
-        success, frame, gray = capture_and_preprocess(cap, prof_times)
+        success, frame, gray = capture_and_preprocess(cap, prof_times, workers.sift_worker.mirror)
         if not success:
             break
         

@@ -10,7 +10,8 @@ import queue
 import time
 import cv2 as cv
 import logging
-from src.config import WorkerConfig, SIFTConfig
+from src.config import WorkerConfig, SIFTConfig, CameraConfig
+from src.core.mirror import MirrorState
 from src.core.utils import normalize_gesture_location
 from src.core.tracking import TrackingSnapshot
 
@@ -258,7 +259,7 @@ class SIFTWorker(threading.Thread):
     allowing the main thread to focus on rendering and user interaction.
     """
 
-    def __init__(self, sift_detector, in_queue, lock, stop_event=None):
+    def __init__(self, sift_detector, in_queue, lock, stop_event=None, mirror=None):
         """
         Initialize the SIFT worker thread.
 
@@ -279,6 +280,11 @@ class SIFTWorker(threading.Thread):
         self.validate_interval = SIFTConfig.VALIDATION_INTERVAL
         self._last_validation_ts = 0.0
         self.stop_event = stop_event
+
+        # Whether captured frames get flipped; the main loop applies it at
+        # capture, this worker settles it in auto mode. See src/core/mirror.py.
+        self.mirror = mirror if mirror is not None else MirrorState(CameraConfig.MIRROR)
+        self._last_mirror_check_ts = 0.0
 
         # Snapshot of the detector's tracking state, for consumers on other
         # threads. Read it only while holding self.lock.
@@ -320,6 +326,7 @@ class SIFTWorker(threading.Thread):
                             continue
 
                 # Need to detect/re-detect homography
+                frame = self._settle_mirror(frame)
                 detected = False
                 attempts = self._prepare_detection_attempts(frame)
 
@@ -362,6 +369,31 @@ class SIFTWorker(threading.Thread):
                 # escape run(), killing the daemon thread with no log while the
                 # main loop kept redrawing the last snapshot forever.
                 logger.error(f"SIFT worker error: {e}")
+
+    def _settle_mirror(self, frame):
+        """
+        In auto mode, until decided: compare map matches in the frame as
+        captured and flipped (at most once a second, it costs two SIFT passes).
+        Frames queued before the decision arrive unflipped, so a frame is
+        flipped here if the decision says it should have been.
+        """
+        if self.mirror.decided:
+            return frame
+        now = time.time()
+        if now - self._last_mirror_check_ts < WorkerConfig.MIRROR_CHECK_INTERVAL:
+            return frame
+        self._last_mirror_check_ts = now
+        flipped = cv.flip(frame, 1)
+        try:
+            plain_n = self.sift_detector.count_good_matches(frame)
+            flipped_n = self.sift_detector.count_good_matches(flipped)
+        except Exception as e:  # never let the mirror check block map detection
+            logger.warning(f"Mirror check failed: {e}")
+            return frame
+        logger.debug(f"Mirror check: as captured {plain_n}, flipped {flipped_n}")
+        if self.mirror.decide(plain_n, flipped_n) and self.mirror.flip:
+            return flipped
+        return frame
 
     def _prepare_detection_attempts(self, frame):
         """

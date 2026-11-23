@@ -11,12 +11,15 @@ Precedence: command-line flag, then CAMIO_* environment variable, then the
 value on the class.
 """
 
+import ast
 import logging
 import os
 
 import cv2 as cv
 
+from src import config
 from src.config import CameraConfig, TapDetectionConfig
+from src.core.mirror import MODES as MIRROR_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,53 @@ def add_arguments(parser):
         '--log-level', choices=LOG_LEVELS, default=None,
         help='Logging verbosity (default: INFO)'
     )
+    parser.add_argument(
+        '--mirror', choices=MIRROR_MODES, default=None,
+        help="Flip the camera image left-right: auto (default) detects it from "
+             "the map, on always flips, off never does"
+    )
+    parser.add_argument(
+        '--record-taps', default=None, metavar='FILE.csv',
+        help='Write per-frame finger signals and tap events to a CSV for tuning'
+    )
+    parser.add_argument(
+        '--set', action='append', default=[], metavar='CLASS.NAME=VALUE',
+        help='Override any value in src/config.py for this run, e.g. '
+             '--set TapDetectionConfig.TAP_MAX_INTERVAL=1.5 (repeatable)'
+    )
+
+
+def parse_setting(text):
+    """
+    Turn 'TapDetectionConfig.TAP_MAX_INTERVAL=1.5' into (class, name, value).
+
+    Only existing attributes of the *Config classes can be set, and the value
+    must keep the attribute's type (an int may become a float), so a typo
+    fails at startup instead of silently doing nothing.
+    """
+    target, sep, raw = text.partition('=')
+    cls_name, dot, name = target.strip().partition('.')
+    cls = getattr(config, cls_name, None)
+    if not (sep and dot and cls_name.endswith('Config') and isinstance(cls, type)):
+        raise ValueError(f'--set {text!r}: expected Config class like TapDetectionConfig.NAME=VALUE')
+    if not name.isupper() or not hasattr(cls, name):
+        raise ValueError(f'--set {text!r}: {cls_name} has no setting {name}')
+    current = getattr(cls, name)
+    try:
+        value = ast.literal_eval(raw.strip())
+    except (ValueError, SyntaxError):
+        raise ValueError(f'--set {text!r}: cannot parse value {raw!r}') from None
+    numeric = (int, float)
+    if isinstance(current, bool) or isinstance(value, bool):
+        ok = isinstance(current, bool) and isinstance(value, bool)
+    elif isinstance(current, numeric):
+        ok = isinstance(value, numeric)
+        value = float(value) if isinstance(current, float) else value
+    else:
+        ok = current is None or isinstance(value, type(current))
+    if not ok:
+        raise ValueError(f'--set {text!r}: {name} is {type(current).__name__}, got {value!r}')
+    return cls, name, value
 
 
 def apply_overrides(args, environ=None):
@@ -132,5 +182,27 @@ def apply_overrides(args, environ=None):
     if level is not None:
         logging.getLogger().setLevel(getattr(logging, level))
         applied.append(f'log level = {level}')
+
+    mirror = getattr(args, 'mirror', None)
+    if mirror is None and env.get('CAMIO_MIRROR'):
+        mirror = env['CAMIO_MIRROR'].lower()
+        if mirror not in MIRROR_MODES:
+            raise ValueError(
+                f'CAMIO_MIRROR: expected one of {list(MIRROR_MODES)}, got {mirror!r}'
+            )
+    if mirror is not None:
+        CameraConfig.MIRROR = mirror
+        applied.append(f'CameraConfig.MIRROR = {mirror}')
+
+    record = getattr(args, 'record_taps', None)
+    if record:
+        TapDetectionConfig.RECORD_SIGNALS_PATH = record
+        applied.append(f'TapDetectionConfig.RECORD_SIGNALS_PATH = {record}')
+
+    # Parse every --set first so one bad entry changes nothing.
+    settings = [parse_setting(text) for text in getattr(args, 'set', None) or []]
+    for cls, name, value in settings:
+        setattr(cls, name, value)
+        applied.append(f'{cls.__name__}.{name} = {value!r}')
 
     return applied

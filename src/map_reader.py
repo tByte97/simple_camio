@@ -12,6 +12,7 @@ import wave
 APP_ROOT = Path(__file__).resolve().parent.parent
 SHARED_AUDIO = ('blipsound', 'welcome_message', 'goodbye_message', 'heartbeat', 'crickets')
 AUDIO_SUFFIXES = {'.wav', '.mp3', '.ogg', '.flac', '.m4a'}
+DETAILS_SUFFIX = '.details.json'
 
 
 def _inside(base, path):
@@ -193,7 +194,51 @@ def resolve_model(document, model_file, app_root=APP_ROOT):
             model.pop('map_description', None)
     else:
         model.pop('map_description', None)
+    attach_details(model, source)
     return model
+
+
+def details_file(model_file):
+    """The optional sidecar holding one detail sentence per zone."""
+    source = Path(model_file)
+    return source.with_name(source.stem + DETAILS_SUFFIX)
+
+
+def attach_details(model, model_file):
+    """Attach <name>.details.json sentences to zones in memory.
+
+    The file maps a zone label (or zone ID) to a sentence spoken on a double tap:
+    {"Сонце": "..."}. The maker export itself stays unchanged.
+    """
+    from src.tts import model_audio
+
+    path = details_file(Path(model_file).resolve())
+    if not path.is_file():
+        return
+    try:
+        details = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as error:
+        raise ValueError(f'{path.name}: invalid JSON ({error})') from None
+    if not isinstance(details, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in details.items()):
+        raise ValueError(f'{path.name} must map zone names to sentences')
+
+    hotspots = model.get('hotspots', [])
+    for key, text in details.items():
+        if not text.strip():
+            continue
+        matches = [h for h in hotspots
+                   if h.get('id') == key or _label(h.get('textDescription')) == _label(key)]
+        if not matches:
+            raise ValueError(f'{path.name}: no zone named {key!r}')
+        if len(matches) > 1:
+            raise ValueError(f'{path.name}: {key!r} matches several zones; use a zone ID')
+        hotspot = matches[0]
+        if 'detailText' in hotspot:
+            raise ValueError(f'{path.name}: two entries for zone {key!r}')
+        hotspot['detailText'] = text.strip()
+        hotspot['detailAudio'] = str(_inside(path.parent.resolve(),
+                                             model_audio.detail_path(hotspot['audioDescription'])))
 
 
 def validate_images(model, strict=False):
@@ -257,6 +302,7 @@ def main():
         problems = [f'Missing shared sound: {model[field]}' for field in SHARED_AUDIO
                     if model.get(field) and not Path(model[field]).is_file()]
         paths = [h['audioDescription'] for h in model.get('hotspots', [])]
+        paths += [h['detailAudio'] for h in model.get('hotspots', []) if h.get('detailAudio')]
         if model.get('map_description'):
             paths.append(model['map_description'])
         for path in paths:
@@ -275,7 +321,9 @@ def main():
             print(problem)
         if problems:
             return 1
-        print(f"Map valid: {model.get('name') or Path(args.input1).stem}, {len(model.get('hotspots', []))} zones")
+        details = sum(1 for h in model.get('hotspots', []) if h.get('detailAudio'))
+        print(f"Map valid: {model.get('name') or Path(args.input1).stem}, {len(model.get('hotspots', []))} zones"
+              + (f", {details} with details" if details else ''))
         return 0
     except (ValueError, OSError) as error:
         print(f'Map invalid: {error}')

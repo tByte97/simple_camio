@@ -62,11 +62,39 @@ from collections import deque
 import time
 import logging
 from google.protobuf.json_format import MessageToDict
-from src.config import MediaPipeConfig, TapDetectionConfig
+from src.config import GestureDetectorConfig, MediaPipeConfig, TapDetectionConfig
 from src.tap_classifier import TapClassifier
 from src.tap_classifier.tap_data_collector import create_collector_from_config
 
 logger = logging.getLogger(__name__)
+
+FINGERS = {
+    'index': (5, 6, 7, 8),
+    'middle': (9, 10, 11, 12),
+    'ring': (13, 14, 15, 16),
+    'little': (17, 18, 19, 20),
+}
+
+
+def finger_extension_ratios(hand_landmarks, width, height):
+    """
+    2D extension ratio per finger as the camera sees it: straight-line
+    base-to-tip length over the summed bone lengths (~1.0 straight, lower curled).
+    """
+    ratios = {}
+    for finger, indices in FINGERS.items():
+        pts = np.array([[hand_landmarks.landmark[i].x * width,
+                         hand_landmarks.landmark[i].y * height] for i in indices])
+        bones = np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()
+        ratios[finger] = float(np.linalg.norm(pts[-1] - pts[0]) / bones) if bones > 1e-6 else 0.0
+    return ratios
+
+
+def is_two_finger_pose(ratios):
+    """Index and middle extended, ring and little curled (a 'V' laid on the map)."""
+    cfg = GestureDetectorConfig
+    return (min(ratios['index'], ratios['middle']) >= cfg.TWO_FINGER_EXTENDED_MIN
+            and max(ratios['ring'], ratios['little']) <= cfg.TWO_FINGER_CURLED_MAX)
 
 
 class PoseDetectorMP:
@@ -418,7 +446,12 @@ class PoseDetectorMP:
             if tap_detected:
                 movement_status = 'double_tap'
                 break
-        
+
+            # The first hand's two-finger pose asks for the zone's details.
+            if h == 0 and is_two_finger_pose(
+                    finger_extension_ratios(hand_landmarks, orig_w, orig_h)):
+                movement_status = 'two_finger'
+
         return index_pos, movement_status
     
     def _get_hand_key(self, results, hand_index):
@@ -694,7 +727,8 @@ class PoseDetectorMP:
                 'start_baseline_angle': angle_deg,
                 'max_angle': angle_deg,
                 'peak_angle_depth': 0.0,
-                'press_mode': None
+                'press_mode': None,
+                'hand_key': hand_key,
             }
         return self._tap_state[hand_key]
 
@@ -786,6 +820,7 @@ class PoseDetectorMP:
                 state['max_angle'] = angle_deg
                 state['peak_angle_depth'] = max(0.0, angle_deg - baseline_ang)
 
+                state['event'] = 'press'
                 if ang_press and not z_press:
                     state['press_mode'] = 'angle'
                 elif z_press and not ang_press:
@@ -918,7 +953,12 @@ class PoseDetectorMP:
         else:
             # Collect negative example when tap validation fails
             reason = self._determine_rejection_reason(press_duration, xy_drift, depth_z, depth_ang, thresholds)
-            self._collect_tap_data_negative(state, thresholds, press_duration, xy_drift, 
+            state['event'] = f'rejected:{reason}'
+            logger.info(f"Tap rejected ({reason}): duration={press_duration:.3f}s, "
+                        f"depth={depth_z:.4f} (min {thresholds['tap_min_press_depth']:.4f}), "
+                        f"angleDepth={depth_ang:.1f}, drift={xy_drift:.1f} "
+                        f"(max {thresholds['tap_max_xy_drift']:.1f})")
+            self._collect_tap_data_negative(state, thresholds, press_duration, xy_drift,
                                            depth_z, depth_ang, reason)
             state['pressing'] = False
 
@@ -964,20 +1004,25 @@ class PoseDetectorMP:
         Returns:
             bool: True if double tap detected
         """
+        last_tap = state.get('last_tap', 0.0)
+        gap = now - last_tap if last_tap > 0.0 else 1e9
+
+        # gap = time since this hand's previous tap: a double tap needs
+        # TAP_MIN_INTERVAL <= gap <= TAP_MAX_INTERVAL.
         logger.info(f"Tap detected: duration={duration:.3f}s, "
                   f"depth={depth_z:.4f}, angleDepth={depth_ang:.1f}, "
                   f"drift={drift:.1f}, scale={thresholds['scale_factor']:.2f}, "
                   f"velScale={thresholds.get('velocity_scale', 1.0):.2f}, "
-                  f"palmWidth={thresholds['palm_width']:.1f}px")
+                  f"palmWidth={thresholds['palm_width']:.1f}px, "
+                  f"hand={state.get('hand_key', '?')}, "
+                  f"gap={'-' if gap > 1e8 else f'{gap:.2f}s'}")
 
         # Collect positive tap example (when tap is confirmed)
         self._collect_tap_data_positive(state, thresholds, duration, drift, depth_z, depth_ang)
 
-        last_tap = state.get('last_tap', 0.0)
-        gap = now - last_tap if last_tap > 0.0 else 1e9
-
         # Check for double tap
         if self._is_double_tap(state, now, last_tap, gap):
+            state['event'] = 'double'
             logger.info(f"Double tap detected! Interval={gap:.3f}s")
 
             if draw and img_out is not None:
@@ -988,6 +1033,7 @@ class PoseDetectorMP:
             self._reset_tap_state_after_double_tap(state, now)
             return True
         else:
+            state['event'] = 'tap'
             state['last_tap'] = now
             state['pressing'] = False
 
@@ -1720,6 +1766,7 @@ class PoseDetectorMPEnhanced(PoseDetectorMP):
         dt = max(1e-3, now - st['prev_ts'])
         velocities = self._compute_velocities(st, signals, dt, pos_x, pos_y)
         triggers = self._evaluate_triggers(st, signals, velocities, thresholds)
+        st['gates'] = (stable, conf_ok, triggers['trigger_count'])  # for the signal recorder
         
         # Try to start press
         if self._try_start_enhanced_press(st, is_pointing, stable, conf_ok,
@@ -1844,6 +1891,8 @@ class PoseDetectorMPEnhanced(PoseDetectorMP):
         # Fuse statuses (double tap takes priority)
         if (base_status == 'double_tap') or (enhanced_status == 'double_tap'):
             final_status = 'double_tap'
+        elif base_status == 'two_finger':
+            final_status = 'two_finger'
         elif (base_status == 'pointing') or (enhanced_status == 'pointing'):
             final_status = 'pointing'
         else:
@@ -1888,6 +1937,7 @@ class PoseDetectorMPEnhanced(PoseDetectorMP):
                          stable and conf_ok and (triggers['trigger_count'] >= getattr(self, 'MOVING_TAP_TRIGGER_COUNT', 3))
         
         if start_ok_pointing or start_ok_moving:
+            st['event'] = 'press'
             st['pressing'] = True
             st['press_start'] = now
             st['press_start_xy'] = np.array([pos_x, pos_y], dtype=float)
@@ -1943,10 +1993,13 @@ class PoseDetectorMPEnhanced(PoseDetectorMP):
         # Validate tap
         if not self._is_valid_enhanced_tap(st, now, pos_x, pos_y, velocities, thresholds):
             st['pressing'] = False
+            st['event'] = 'rejected'
             return False
-        
+
         # Check for double tap
-        return self._check_enhanced_double_tap(st, now, pos_x, pos_y, draw, img_out)
+        double = self._check_enhanced_double_tap(st, now, pos_x, pos_y, draw, img_out)
+        st['event'] = 'double' if double else 'tap'
+        return double
     
     def _should_release_enhanced_press(self, st, now, velocities, thresholds):
         """
@@ -2355,6 +2408,12 @@ class CombinedPoseDetector:
         
         # Propagate image (for downstream tools that may inspect it)
         self.image_map_color = self.base.image_map_color
+
+        # Optional per-frame signal CSV (--record-taps) for tuning tap detection.
+        self.recorder = None
+        if TapDetectionConfig.RECORD_SIGNALS_PATH:
+            from src.detection.signal_recorder import SignalRecorder
+            self.recorder = SignalRecorder(TapDetectionConfig.RECORD_SIGNALS_PATH)
     
     @property
     def data_collector(self):
@@ -2401,5 +2460,12 @@ class CombinedPoseDetector:
         mp_results = self.base.get_cached_mp_results()
         
         # Run enhanced detector with drawing enabled
-        return self.enh.detect(image, H, _, processing_scale, draw,
-                               base_outputs=base_outputs, mp_results=mp_results)
+        outputs = self.enh.detect(image, H, _, processing_scale, draw,
+                                  base_outputs=base_outputs, mp_results=mp_results)
+        if self.recorder is not None and mp_results[0] is not None:
+            try:
+                self.recorder.record(self.base, self.enh, mp_results, outputs[1])
+            except Exception as e:  # recording must never stop detection
+                logger.warning(f"Signal recording failed, turning it off: {e}")
+                self.recorder = None
+        return outputs

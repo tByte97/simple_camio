@@ -173,3 +173,48 @@ def test_log_level_flag_sets_the_root_logger(parser):
 def test_bad_log_level_in_environment_is_rejected(parser):
     with pytest.raises(ValueError, match='CAMIO_LOG_LEVEL'):
         apply_overrides(parser.parse_args([]), environ={'CAMIO_LOG_LEVEL': 'CHATTY'})
+
+
+# --- --set: any config value for one run, without editing src/config.py -----
+
+
+@pytest.fixture
+def restore_tap_window():
+    saved = (TapDetectionConfig.TAP_MAX_INTERVAL, TapDetectionConfig.Z_HISTORY_LEN,
+             TapDetectionConfig.ALLOW_TAP_WHILE_MOVING)
+    yield
+    (TapDetectionConfig.TAP_MAX_INTERVAL, TapDetectionConfig.Z_HISTORY_LEN,
+     TapDetectionConfig.ALLOW_TAP_WHILE_MOVING) = saved
+
+
+def test_set_overrides_config_values(parser, restore_tap_window):
+    args = parser.parse_args(['--set', 'TapDetectionConfig.TAP_MAX_INTERVAL=1.5',
+                              '--set', 'TapDetectionConfig.Z_HISTORY_LEN=4',
+                              '--set', 'TapDetectionConfig.ALLOW_TAP_WHILE_MOVING=False'])
+    applied = apply_overrides(args, environ={})
+    assert TapDetectionConfig.TAP_MAX_INTERVAL == 1.5
+    assert TapDetectionConfig.Z_HISTORY_LEN == 4
+    assert TapDetectionConfig.ALLOW_TAP_WHILE_MOVING is False
+    assert 'TapDetectionConfig.TAP_MAX_INTERVAL = 1.5' in applied
+
+
+def test_an_int_is_accepted_for_a_float_setting(parser, restore_tap_window):
+    apply_overrides(parser.parse_args(['--set', 'TapDetectionConfig.TAP_MAX_INTERVAL=2']), environ={})
+    assert TapDetectionConfig.TAP_MAX_INTERVAL == 2.0
+    assert isinstance(TapDetectionConfig.TAP_MAX_INTERVAL, float)
+
+
+@pytest.mark.parametrize('text, message', [
+    ('TapDetectionConfig.TAP_MAX_INTERVL=1.5', 'has no setting'),
+    ('NoSuchConfig.X=1', 'expected Config class'),
+    ('TapDetectionConfig.TAP_MAX_INTERVAL', 'expected Config class'),
+    ('TapDetectionConfig.TAP_MAX_INTERVAL=fast', 'cannot parse'),
+    ('TapDetectionConfig.Z_HISTORY_LEN=True', 'is int'),
+    ('TapDetectionConfig.ALLOW_TAP_WHILE_MOVING=1', 'is bool'),
+])
+def test_bad_set_values_fail_and_change_nothing(parser, restore_tap_window, text, message):
+    before = TapDetectionConfig.TAP_MAX_INTERVAL
+    args = parser.parse_args(['--set', 'TapDetectionConfig.TAP_MAX_INTERVAL=9.5', '--set', text])
+    with pytest.raises(ValueError, match=message):
+        apply_overrides(args, environ={})
+    assert TapDetectionConfig.TAP_MAX_INTERVAL == before

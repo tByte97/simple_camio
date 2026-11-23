@@ -186,6 +186,7 @@ class ZoneAudioPlayer:
         self.prev_zone_moving = -1
         self.curr_zone_moving = -1
         self.sound_files = {}
+        self.detail_files = {}
         self.hotspots = {}
         self.enable_blips = False
 
@@ -318,6 +319,12 @@ class ZoneAudioPlayer:
             if sound is not None:
                 self.sound_files[key] = sound
 
+            if hotspot.get('detailAudio'):
+                detail = self._load_sound(
+                    hotspot['detailAudio'], f"{hotspot.get('textDescription')} (detail)")
+                if detail is not None:
+                    self.detail_files[key] = detail
+
     def set_zone_volume(self, volume):
         """
         Set the volume for zone audio playback (descriptions, welcome, goodbye).
@@ -343,7 +350,7 @@ class ZoneAudioPlayer:
                 self.welcome_message.set_volume(volume)
             if self.goodbye_message:
                 self.goodbye_message.set_volume(volume)
-            for sound in self.sound_files.values():
+            for sound in [*self.sound_files.values(), *self.detail_files.values()]:
                 sound.set_volume(volume)
         
         logger.debug(f"Set zone audio volume to {volume}")
@@ -465,8 +472,13 @@ class ZoneAudioPlayer:
         # Get zone name and play audio if zone changed. A double-tap is an
         # explicit "say that again", so it ignores the change check - otherwise
         # the one gesture meant for repeating a zone could never repeat it.
+        # A zone with a detail sentence (<map>.details.json) speaks that on a
+        # double-tap instead of repeating its name.
         zone_name = self.hotspots[zone]['textDescription']
-        if status == 'double_tap' or self.prev_zone_name != zone_name:
+        if status == 'double_tap' and zone in self.detail_files:
+            self._play_zone_detail(zone)
+            self.prev_zone_name = zone_name
+        elif status == 'double_tap' or self.prev_zone_name != zone_name:
             self._play_zone_audio(zone)
             self.prev_zone_name = zone_name
 
@@ -504,6 +516,14 @@ class ZoneAudioPlayer:
         Args:
             zone (int): Zone ID to play audio for
         """
+        self._play_clip(zone, self.sound_files, 'audio')
+
+    def _play_zone_detail(self, zone):
+        """Play the zone's detail sentence (double-tap)."""
+        self._play_clip(zone, self.detail_files, 'detail')
+
+    def _play_clip(self, zone, sounds, kind):
+        """Stop whatever zone audio is playing, then play sounds[zone] if loaded."""
         if USE_PYGLET:
             # Stop current audio
             if self.player:
@@ -511,25 +531,23 @@ class ZoneAudioPlayer:
                 self.player.delete()
 
             # Play new audio if available
-            if zone in self.sound_files:
-                sound = self.sound_files[zone]
+            if zone in sounds:
                 try:
-                    self.player = sound.play()
-                    logger.debug(f"Playing audio for zone {zone}")
+                    self.player = sounds[zone].play()
+                    logger.debug(f"Playing {kind} for zone {zone}")
                 except Exception as e:
-                    logger.error(f"Cannot play zone audio: {e}")
-        
+                    logger.error(f"Cannot play zone {kind}: {e}")
+
         elif USE_PYGAME:
             # Stop current audio
             import pygame
             pygame.mixer.stop()
-            
+
             # Play new audio if available
-            if zone in self.sound_files:
-                sound = self.sound_files[zone]
+            if zone in sounds:
                 try:
-                    sound.play()
-                    logger.debug(f"Playing audio for zone {zone}")
+                    sounds[zone].play()
+                    logger.debug(f"Playing {kind} for zone {zone}")
                 except Exception as e:
-                    logger.error(f"Cannot play zone audio: {e}")
+                    logger.error(f"Cannot play zone {kind}: {e}")
 

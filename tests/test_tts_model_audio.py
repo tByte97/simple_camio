@@ -122,3 +122,21 @@ def test_no_real_model_produces_two_entries_with_one_output_path():
         outs = [str(model_audio.output_path(e))
                 for e in model_audio.narration_entries(model) if e.text]
         assert len(outs) == len(set(outs)), f'{path}: duplicate output paths'
+
+
+def test_detail_path_sits_next_to_the_zone_clip():
+    assert model_audio.detail_path('models/M/Audio/tts/zone-1.wav') == Path('models/M/Audio/tts/zone-1-detail.wav')
+    assert model_audio.detail_path('models/Heart/Sound/Aorta.mp3') == Path('models/Heart/Sound/tts/Aorta-detail.wav')
+
+
+def test_detail_entries_are_listed_and_keep_their_destination():
+    model = {'hotspots': [
+        {'textDescription': 'Сонце', 'audioDescription': 'a/tts/zone-1.wav',
+         'detailText': 'Зоря.', 'detailAudio': 'a/tts/zone-1-detail.wav'},
+        {'textDescription': 'Марс', 'audioDescription': 'a/tts/zone-2.wav'},
+    ]}
+    details = [e for e in model_audio.narration_entries(model) if e.kind == 'detail']
+    assert [(e.index, e.text) for e in details] == [(0, 'Зоря.')]
+    assert model_audio.output_path(details[0]) == Path('a/tts/zone-1-detail.wav')
+    model_audio.use_generated_audio(model)
+    assert model['hotspots'][0]['detailAudio'] == 'a/tts/zone-1-detail.wav'

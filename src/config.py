@@ -39,6 +39,10 @@ class CameraConfig:
     SLEEP_FPS = 1
     SLEEP_AFTER_SECONDS = 15.0
     
+    # Mirror the camera image left-right: 'auto' finds out from the map itself
+    # (see src/core/mirror.py), 'on' always flips, 'off' never does.
+    MIRROR = 'auto'
+
     # Use threaded camera capture (can improve FPS significantly)
     USE_THREADED_CAPTURE = True
     
@@ -98,6 +102,14 @@ class GestureDetectorConfig:
     Y_MVMNT_THRESH = 0.95
     Z_MVMNT_THRESH = 4.0
 
+    # Two-finger pose (index + middle extended, ring + little curled) held on a
+    # zone speaks its detail sentence. Ratios are 2D extension ratios as the
+    # camera sees them: ~1.0 for a straight finger, lower for a curled one.
+    TWO_FINGER_EXTENDED_MIN = 0.85   # index and middle at least this straight
+    TWO_FINGER_CURLED_MAX = 0.80     # ring and little at most this straight
+    TWO_FINGER_HOLD_SECONDS = 0.4    # pose held on one zone this long -> details
+    TWO_FINGER_GRACE_SECONDS = 0.25  # brief misclassified frames don't reset the hold
+
 
 # ==================== Tap Detection Configuration ====================
 class TapDetectionConfig:
@@ -137,8 +149,11 @@ class TapDetectionConfig:
     # Temporal constraints
     TAP_MIN_DURATION = 0.05         # Minimum tap duration in seconds (reject accidental touches)
     TAP_MAX_DURATION = 0.50         # Maximum tap duration in seconds (reject prolonged presses)
-    TAP_MIN_INTERVAL = 0.05         # Minimum interval between taps in seconds (debounce)
-    TAP_MAX_INTERVAL = 1.00         # Maximum interval for double-tap recognition in seconds
+    # Recorded 23.11.2026 (top-down camera, SolarSystem): one 0.5 s press was
+    # split into two "taps" 0.13 s apart, and deliberate double taps came
+    # 1.0-1.4 s apart, just outside the old 1.0 s window.
+    TAP_MIN_INTERVAL = 0.20         # Minimum interval between taps in seconds (debounce)
+    TAP_MAX_INTERVAL = 1.50         # Maximum interval for double-tap recognition in seconds
     
     # Spatial constraints
     TAP_MIN_PRESS_DEPTH = 0.010     # Minimal press depth needed to consider a tap (SCALED)
@@ -214,6 +229,9 @@ class TapDetectionConfig:
 
     # ==================== Data Collection ====================
     # Automatic dataset collection during runtime for classifier training
+    # Per-frame CSV of finger signals for tuning tap detection (--record-taps)
+    RECORD_SIGNALS_PATH = ''        # '' = off
+
     COLLECT_TAP_DATA = False        # Enable/disable automatic data collection
     TAP_DATA_DIR = 'data/tap_dataset'  # Directory to save collected tap data
     MAX_COLLECTED_SAMPLES = 10000   # Maximum number of samples to collect per session
@@ -237,6 +255,11 @@ class InteractionConfig:
     # the crickets a third of a second after a real hand lift. Seconds, not
     # frames: the main loop runs slower on a Pi 4 than on the Pi 5 measured.
     HAND_LOSS_GRACE_SECONDS = 0.35
+
+    # A double tap that lands on the background (the finger drifts while
+    # tapping, and small zones like a 1 cm planet are easy to miss) applies to
+    # the zone the finger was on this many seconds ago at most.
+    DOUBLE_TAP_ZONE_MEMORY_SECONDS = 1.5
 
 
 # ==================== SIFT Detection Configuration ====================
@@ -339,6 +362,9 @@ class WorkerConfig:
 
     # SIFT worker retry attempts
     SIFT_RETRY_ATTEMPTS = 3
+
+    # Seconds between auto-mirror checks while undecided (two SIFT passes each)
+    MIRROR_CHECK_INTERVAL = 1.0
 
     # Thread shutdown timeout (seconds)
     THREAD_SHUTDOWN_TIMEOUT = 2.0

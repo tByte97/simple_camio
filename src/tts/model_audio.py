@@ -19,7 +19,7 @@ MAP_DESCRIPTION_INDEX = -1
 class NarrationEntry:
     """One piece of narration a model asks for."""
 
-    kind: str          # 'hotspot' or 'map_description'
+    kind: str          # 'hotspot', 'detail' or 'map_description'
     index: int         # position in model['hotspots'], or MAP_DESCRIPTION_INDEX
     text: str          # what should be spoken; '' when the model has no text
     audio_path: str    # the path the model currently names
@@ -58,6 +58,21 @@ def generated_path(audio_path, subdir=None):
 #: Fixed output stem for a model's description, which has no basename of its own.
 MAP_DESCRIPTION_STEM = 'map_description'
 
+#: Suffix that turns a zone's clip name into its detail clip name.
+DETAIL_SUFFIX = '-detail'
+
+
+def detail_path(audio_path, subdir=None):
+    """
+    Where a zone's detail sentence (played on a double tap) is generated.
+
+    It sits next to the zone's generated clip, so each detail stays traceable
+    to its zone: Audio/tts/zone-1.wav -> Audio/tts/zone-1-detail.wav, and a
+    legacy Audio/Aorta.mp3 -> Audio/tts/Aorta-detail.wav.
+    """
+    generated = generated_path(audio_path, subdir)
+    return generated.with_name(generated.stem + DETAIL_SUFFIX + '.wav')
+
 #: Minimum size of a real WAV file (the RIFF/fmt header alone is this big).
 #: piper creates its --output_file immediately at 0 bytes and fills it only
 #: when synthesis completes, so a run interrupted by a power cut or
@@ -92,6 +107,9 @@ def output_path(entry, subdir=None):
     """
     if entry.kind == 'hotspot':
         return generated_path(entry.audio_path, subdir)
+    if entry.kind == 'detail':
+        # The reader already names the generated destination (detail_path).
+        return Path(entry.audio_path)
     parent = Path(entry.audio_path).parent
     subdir = subdir or TTSConfig.GENERATED_SUBDIR
     if parent.name == subdir:
@@ -115,6 +133,19 @@ def narration_entries(model):
         )
         for index, hotspot in enumerate(model.get('hotspots', []))
     ]
+
+    # Detail sentences come from the map's optional <name>.details.json, which
+    # the reader attaches in memory as detailText/detailAudio.
+    entries.extend(
+        NarrationEntry(
+            kind='detail',
+            index=index,
+            text=(hotspot.get('detailText') or '').strip(),
+            audio_path=hotspot['detailAudio'],
+        )
+        for index, hotspot in enumerate(model.get('hotspots', []))
+        if hotspot.get('detailAudio')
+    )
 
     if model.get('map_description'):
         entries.append(NarrationEntry(
@@ -173,6 +204,8 @@ def use_generated_audio(model):
     entries = narration_entries(model)
     conflicts = conflicting_outputs(entries)
     for entry in entries:
+        if entry.kind == 'detail':
+            continue  # already named at its generated destination
         if not entry.audio_path or _is_usable(Path(entry.audio_path)):
             continue
         generated = output_path(entry)

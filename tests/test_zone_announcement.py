@@ -117,6 +117,8 @@ def _player():
     player.prev_zone_name = 'Бухгалтерія'
     player.played = []
     player._play_zone_audio = player.played.append
+    player.detail_files = {}
+    player._play_zone_detail = lambda zone: player.played.append(('detail', zone))
     return player
 
 
@@ -149,3 +151,79 @@ def test_a_double_tap_on_the_background_still_says_nothing():
 
     assert player.played == []
     assert player.prev_zone_name is None
+
+
+# --- a double-tap speaks the zone's detail sentence when it has one --------
+
+
+def test_a_double_tap_plays_the_detail_sentence_when_the_zone_has_one():
+    player = _player()
+    player.detail_files = {7: object()}
+
+    player.convey(7, 'double_tap')
+
+    assert player.played == [('detail', 7)]
+
+
+def test_pointing_never_plays_the_detail_sentence():
+    player = _player()
+    player.detail_files = {7: object()}
+    player.prev_zone_name = None
+
+    player.convey(7, 'pointing')
+
+    assert player.played == [7]
+
+
+# --- a double-tap that drifts off a small zone still means that zone -------
+
+
+class RecordingWorker:
+    def __init__(self):
+        self.commands = []
+
+    def enqueue_command(self, command):
+        self.commands.append(command)
+
+
+def _components(zones_under_finger):
+    from types import SimpleNamespace
+    zones = iter(zones_under_finger)
+    return SimpleNamespace(
+        interact=SimpleNamespace(push_gesture=lambda loc: next(zones)),
+        camio_player=SimpleNamespace(hotspots={7: {'textDescription': 'Меркурій'}},
+                                     prev_zone_name='Меркурій'),
+    )
+
+
+def _double_tap_zone(hand_state, components):
+    worker = RecordingWorker()
+    simple_camio.process_gestures_and_audio(
+        [10.0, 10.0, 0.0], 'double_tap', components, 0.0, worker, hand_state)
+    return [c.params.get('zone_id') for c in worker.commands if c.command_type == 'play_zone']
+
+
+def test_a_double_tap_on_the_background_uses_the_zone_the_finger_just_left():
+    """A 1 cm planet is easy to miss: the logged double tap landed on 0xFFFFFF."""
+    state = _hand_state()
+    components = _components([7, 16777215])
+    worker = RecordingWorker()
+    simple_camio.process_gestures_and_audio([1.0, 1.0, 0.0], 'pointing', components, 0.0, worker, state)
+
+    assert _double_tap_zone(state, components) == [7]
+
+
+def test_an_old_zone_is_not_reused_by_a_double_tap():
+    state = _hand_state()
+    state['last_zone'] = (7, time.time() - InteractionConfig.DOUBLE_TAP_ZONE_MEMORY_SECONDS - 1)
+
+    assert _double_tap_zone(state, _components([16777215])) == [16777215]
+
+
+def test_a_hand_that_left_forgets_its_zone():
+    state = _hand_state(missing_for=GRACE + 0.1)
+    state['last_zone'] = (7, time.time())
+
+    simple_camio.mark_hand_missing(state, FakeAudioWorker())
+
+    assert 'last_zone' not in state

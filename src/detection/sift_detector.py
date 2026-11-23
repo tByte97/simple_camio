@@ -261,6 +261,20 @@ class SIFTModelDetectorMP:
         return self._compute_homography(good_matches, self.keypoints_sift,
                                        keypoints_scene, "SIFT")
 
+    def count_good_matches(self, frame):
+        """Number of template SIFT features that pass the ratio test in this frame."""
+        keypoints_scene, descriptors_scene = self.sift_detector.detectAndCompute(frame, None)
+        if descriptors_scene is None or len(keypoints_scene) < 2:
+            return 0
+        if self.flann_sift is None:
+            matcher = cv.FlannBasedMatcher(dict(algorithm=1, trees=SIFTConfig.FLANN_TREES),
+                                           dict(checks=SIFTConfig.FLANN_CHECKS))
+        else:
+            matcher = self.flann_sift
+        knn_matches = matcher.knnMatch(self.descriptors_sift, descriptors_scene, k=2)
+        return sum(1 for pair in knn_matches
+                   if len(pair) == 2 and pair[0].distance < SIFTConfig.RATIO_THRESH * pair[1].distance)
+
     def _match_orb(self, frame):
         """ORB-based feature matching as fallback."""
         keypoints_scene, descriptors_scene = self.orb_detector.detectAndCompute(frame, None)

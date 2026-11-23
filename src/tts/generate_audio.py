@@ -82,9 +82,10 @@ def generate_for_model(model_path, *, force=False, voice=None, voices_dir=None,
     text = raw
     expected = json.loads(raw)
     for entry, job in zip(todo, jobs):
-        if job.output_path not in produced:
+        if job.output_path not in produced or entry.kind == 'detail':
+            # Details live in the sidecar file; the map JSON has no field for them.
             continue
-        key = 'audioDescription' if entry.kind == 'hotspot' else 'map_description'
+        key ='audioDescription' if entry.kind == 'hotspot' else 'map_description'
         old_path = (original_model['hotspots'][entry.index].get('audioDescription')
                     if entry.kind == 'hotspot' else original_model.get('map_description'))
         if not old_path:

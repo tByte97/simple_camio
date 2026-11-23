@@ -316,3 +316,54 @@ def test_missing_source_cannot_adopt_another_zones_explicit_recording(tmp_path):
     ]}}
     with pytest.raises(ValueError, match='Conflicting narration outputs'):
         resolve_model(document, tmp_path / 'model.json')
+
+
+# --- optional <name>.details.json: one sentence per zone for a double tap ---
+
+
+def details(path, content):
+    target = path.with_name(path.stem + '.details.json')
+    target.write_text(json.dumps(content, ensure_ascii=False), encoding='utf-8')
+    return target
+
+
+def test_details_attach_by_label_or_zone_id_without_touching_the_export(maker_export):
+    path, document = maker_export
+    document['model']['hotspots'][1]['textDescription'] = 'Ліфт'
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding='utf-8')
+    before = path.read_bytes()
+    details(path, {'zone-1': 'Перше речення.', ' ліфт ': 'Друге речення.'})
+    model = read_map(path)
+    assert [h.get('detailText') for h in model['hotspots']] == ['Перше речення.', 'Друге речення.']
+    assert model['hotspots'][0]['detailAudio'] == str(path.parent / 'Audio/tts/zone-1-detail.wav')
+    assert path.read_bytes() == before
+
+
+def test_no_details_file_changes_nothing(maker_export):
+    path, _ = maker_export
+    assert all('detailAudio' not in h for h in read_map(path)['hotspots'])
+
+
+@pytest.mark.parametrize('content, message', [
+    ({'Марс': 'Речення.'}, 'no zone named'),
+    ({'Сходи': 'Речення.'}, 'matches several zones'),
+    (['Речення.'], 'must map zone names'),
+])
+def test_bad_details_are_reported(maker_export, content, message):
+    path, _ = maker_export
+    details(path, content)
+    with pytest.raises(ValueError, match=message):
+        read_map(path)
+
+
+def test_details_are_generated_and_the_export_stays_byte_identical(maker_export, stub_piper, stub_voice):
+    path, _ = maker_export
+    details(path, {'zone-2': 'Речення про зону.'})
+    before = path.read_bytes()
+    run = lambda: generate_audio.generate_for_model(path, piper_bin=str(stub_piper), voice='test_voice', voices_dir=stub_voice)
+    assert run() == 0
+    assert sorted(p.name for p in (path.parent / 'Audio/tts').glob('*.wav')) == [
+        'zone-1.wav', 'zone-2-detail.wav', 'zone-2.wav']
+    assert run() == 0
+    assert path.read_bytes() == before
+    assert Path(read_map(path)['hotspots'][1]['detailAudio']).is_file()
